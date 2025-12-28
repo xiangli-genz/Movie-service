@@ -1,55 +1,52 @@
 const router = require('express').Router();
 const moment = require('moment');
 const Movie = require('../../../models/movie.model');
-
+const Category = require('../../../models/category.model');
+const Cinema = require('../../../models/cinema.model');
 const { default: slugify } = require('slugify');
 const multer = require('multer');
-// const cloudinaryHelper = require('../../../helpers/cloudinary.helper');
-
-// const upload = multer({ storage: cloudinaryHelper.storage });
 const upload = require('../../../helpers/cloudinary.helper');
 
-// GET: Lấy danh sách phim (API JSON)
+// ===== [GET] /api/catalog/admin/movies - Danh sách phim (Admin) =====
 router.get('/', async (req, res) => {
   try {
     const find = {
       deleted: false
     };
 
+    // Filter by status
     if(req.query.status) {
       find.status = req.query.status;
     }
 
+    // Filter by createdBy
     if(req.query.createdBy) {
       find.createdBy = req.query.createdBy;
     }
 
+    // Filter by date
     const dateFiler = {};
-
     if(req.query.startDate) {
       const startDate = moment(req.query.startDate).startOf("date").toDate();
       dateFiler.$gte = startDate;
     }
-
     if(req.query.endDate) {
       const endDate = moment(req.query.endDate).endOf("date").toDate();
       dateFiler.$lte = endDate;
     }
-
     if(Object.keys(dateFiler).length > 0) {
       find.createdAt = dateFiler;
     }
 
+    // Search by keyword
     if(req.query.keyword) {
-      const keyword = slugify(req.query.keyword, {
-        lower: true
-      });
+      const keyword = slugify(req.query.keyword, { lower: true });
       const keywordRegex = new RegExp(keyword);
       find.slug = keywordRegex;
     }
 
-    // PHÂN TRANG
-    const limit = 10;
+    // Pagination
+    const limit = parseInt(req.query.limit) || 10;
     const page = parseInt(req.query.page) || 1;
     const skip = (page - 1) * limit;
 
@@ -58,17 +55,14 @@ router.get('/', async (req, res) => {
 
     const movieList = await Movie
       .find(find)
-      .sort({
-        position: "desc"
-      })
+      .sort({ position: "desc" })
       .skip(skip)
       .limit(limit);
 
-    // Format dữ liệu
+    // Format dates
     for (const item of movieList) {
       item.createdByFullName = item.createdBy ? String(item.createdBy) : "-";
       item.updatedByFullName = item.updatedBy ? String(item.updatedBy) : "-";
-
       item.createdAtFormat = moment(item.createdAt).format("HH:mm - DD/MM/YYYY");
       item.updatedAtFormat = moment(item.updatedAt).format("HH:mm - DD/MM/YYYY");
       
@@ -81,12 +75,14 @@ router.get('/', async (req, res) => {
 
     res.json({
       code: "success",
-      data: movieList,
-      pagination: {
-        currentPage: page,
-        totalPages: totalPages,
-        totalRecords: totalRecords,
-        limit: limit
+      data: {
+        movies: movieList,
+        pagination: {
+          currentPage: page,
+          totalPages: totalPages,
+          totalRecords: totalRecords,
+          limit: limit
+        }
       }
     });
   } catch (error) {
@@ -98,7 +94,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// GET: Lấy chi tiết phim (API JSON)
+// ===== [GET] /api/catalog/admin/movies/:id - Chi tiết phim =====
 router.get('/:id', async (req, res) => {
   try {
     const id = req.params.id;
@@ -115,27 +111,14 @@ router.get('/:id', async (req, res) => {
       });
     }
 
-    res.json(movie);
-  } catch (error) {
-    res.status(500).json({
-      code: "error",
-      message: "Id không hợp lệ!"
-    });
-  }
-});
-
-// DELETE: Xóa phim (API JSON)
-router.delete('/:id', async (req, res) => {
-  try {
-    const id = req.params.id;
-    
-    await Movie.deleteOne({
-      _id: id
-    });
+    // Format date
+    if (movie.releaseDate) {
+      movie.releaseDateFormat = moment(movie.releaseDate).format("YYYY-MM-DD");
+    }
 
     res.json({
       code: "success",
-      message: "Xóa phim thành công!"
+      data: { movie }
     });
   } catch (error) {
     res.status(500).json({
@@ -145,15 +128,19 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// POST: Tạo phim mới (API JSON)
+// ===== [POST] /api/catalog/admin/movies - Tạo phim mới =====
 router.post('/', upload.fields([
   { name: 'avatar', maxCount: 1 },
   { name: 'images', maxCount: 10 }
 ]), async (req, res) => {
   try {
+    console.log('=== CREATING MOVIE ===');
+    console.log('Body:', req.body);
+    console.log('Files:', req.files);
+    
     // Validate required fields
     if (!req.body.name || !req.body.name.trim()) {
-      return res.json({
+      return res.status(400).json({
         code: "error",
         message: "Tên phim không được để trống"
       });
@@ -161,78 +148,101 @@ router.post('/', upload.fields([
 
     req.body.name = req.body.name.trim();
     
-    // Tạo slug
+    // Generate slug
     req.body.slug = slugify(req.body.name, { lower: true, strict: true });
     
-    // Check trùng slug
+    // Check duplicate slug
     let count = 0;
     let baseSlug = req.body.slug;
-    while (await Movie.findOne({ slug: req.body.slug })) {
+    while (await Movie.findOne({ slug: req.body.slug, deleted: false })) {
       count++;
       req.body.slug = `${baseSlug}-${count}`;
     }
     
+    // Set position
     if(req.body.position) {
       req.body.position = parseInt(req.body.position);
     } else {
-      const totalRecord = await Movie.countDocuments({});
+      const totalRecord = await Movie.countDocuments({ deleted: false });
       req.body.position = totalRecord + 1;
     }
 
+    // Set status
     if (!req.body.status) {
       req.body.status = 'active';
     }
 
-    req.body.createdBy = req.account?.id || null;
-    req.body.updatedBy = req.account?.id || null;
+    // Set createdBy/updatedBy
+    req.body.createdBy = req.account?.id || req.body.createdBy || null;
+    req.body.updatedBy = req.account?.id || req.body.updatedBy || null;
     
-    if(req.files && req.files.avatar) {
+    // Handle avatar upload
+    if(req.files && req.files.avatar && req.files.avatar[0]) {
       req.body.avatar = req.files.avatar[0].path;
     }
 
-    // Xử lý giá vé
+    // Handle ticket prices
     req.body.prices = {
       standard: parseInt(req.body.priceStandard) || 50000,
-      vip: parseInt(req.body.priceVip) || 60000,
-      couple: parseInt(req.body.priceCouple) || 110000
+      vip: parseInt(req.body.priceVip) || 70000,
+      couple: parseInt(req.body.priceCouple) || 130000
     };
 
-    // Xử lý ngày phát hành
-    req.body.releaseDate = req.body.releaseDate ? new Date(req.body.releaseDate) : null;
+    // Handle release date
+    if (req.body.releaseDate) {
+      req.body.releaseDate = new Date(req.body.releaseDate);
+    }
 
-    // Xử lý lịch chiếu
+    // Handle showtimes
     if(req.body.showtimes) {
       if(typeof req.body.showtimes === 'string') {
         try {
           req.body.showtimes = JSON.parse(req.body.showtimes);
         } catch (e) {
+          console.error('Error parsing showtimes:', e);
           req.body.showtimes = [];
         }
+      }
+      
+      // Validate và format showtimes
+      if (Array.isArray(req.body.showtimes)) {
+        req.body.showtimes = req.body.showtimes.map(st => ({
+          cinema: st.cinema,
+          date: new Date(st.date),
+          times: Array.isArray(st.times) ? st.times : [],
+          format: st.format || '2D'
+        }));
       }
     } else {
       req.body.showtimes = [];
     }
 
+    // Handle images
     if(req.files && req.files.images && req.files.images.length > 0) {
       req.body.images = req.files.images.map(file => file.path);
     }
 
+    // Create movie
     const newRecord = new Movie(req.body);
     await newRecord.save();
 
-    res.json({
+    console.log('✅ Movie created:', newRecord._id, newRecord.name);
+
+    res.status(201).json({
       code: "success",
       message: "Thêm phim mới thành công!",
-      data: newRecord
+      data: { movie: newRecord }
     });
   } catch (error) {
     console.error("Error creating movie:", error);
+    
     let message = "Có lỗi xảy ra khi tạo phim";
     if (error.errors && error.errors.name) {
       message = error.errors.name.message;
     } else if (error.message) {
       message = error.message;
     }
+    
     res.status(500).json({
       code: "error",
       message: message
@@ -240,7 +250,7 @@ router.post('/', upload.fields([
   }
 });
 
-// PUT: Cập nhật phim (API JSON)
+// ===== [PUT] /api/catalog/admin/movies/:id - Cập nhật phim =====
 router.put('/:id', upload.fields([
   { name: 'avatar', maxCount: 1 },
   { name: 'images', maxCount: 10 }
@@ -260,80 +270,99 @@ router.put('/:id', upload.fields([
       });
     }
 
-    // Cập nhật tên và slug nếu tên thay đổi
+    console.log('=== UPDATING MOVIE ===');
+    console.log('Movie ID:', id);
+    console.log('Body:', req.body);
+
+    // Update name and slug if name changed
     if (req.body.name && req.body.name.trim()) {
       req.body.name = req.body.name.trim();
       if (req.body.name !== movie.name) {
         req.body.slug = slugify(req.body.name, { lower: true, strict: true });
         
-        // Check trùng slug
+        // Check duplicate slug
         let count = 0;
         let baseSlug = req.body.slug;
-        while (await Movie.findOne({ slug: req.body.slug, _id: { $ne: id } })) {
+        while (await Movie.findOne({ slug: req.body.slug, _id: { $ne: id }, deleted: false })) {
           count++;
           req.body.slug = `${baseSlug}-${count}`;
         }
       }
     }
 
-    // Cập nhật các trường khác
+    // Update position
     if (req.body.position) {
       req.body.position = parseInt(req.body.position);
     }
 
+    // Update status
     if (!req.body.status) {
       req.body.status = 'active';
     }
 
-    req.body.updatedBy = req.account?.id || null;
+    // Update updatedBy
+    req.body.updatedBy = req.account?.id || req.body.updatedBy || null;
     req.body.updatedAt = new Date();
 
-    // Cập nhật avatar nếu có file mới
-    if (req.files && req.files.avatar) {
+    // Update avatar if new file uploaded
+    if (req.files && req.files.avatar && req.files.avatar[0]) {
       req.body.avatar = req.files.avatar[0].path;
     }
 
-    // Xử lý giá vé
+    // Update prices
     if (req.body.priceStandard || req.body.priceVip || req.body.priceCouple) {
       req.body.prices = {
         standard: parseInt(req.body.priceStandard) || movie.prices?.standard || 50000,
-        vip: parseInt(req.body.priceVip) || movie.prices?.vip || 60000,
-        couple: parseInt(req.body.priceCouple) || movie.prices?.couple || 110000
+        vip: parseInt(req.body.priceVip) || movie.prices?.vip || 70000,
+        couple: parseInt(req.body.priceCouple) || movie.prices?.couple || 130000
       };
     }
 
-    // Xử lý ngày phát hành
+    // Update release date
     if (req.body.releaseDate) {
       req.body.releaseDate = new Date(req.body.releaseDate);
     }
 
-    // Xử lý lịch chiếu
+    // Update showtimes
     if (req.body.showtimes) {
       if (typeof req.body.showtimes === 'string') {
         try {
           req.body.showtimes = JSON.parse(req.body.showtimes);
         } catch (e) {
+          console.error('Error parsing showtimes:', e);
           req.body.showtimes = movie.showtimes || [];
         }
       }
+      
+      if (Array.isArray(req.body.showtimes)) {
+        req.body.showtimes = req.body.showtimes.map(st => ({
+          cinema: st.cinema,
+          date: new Date(st.date),
+          times: Array.isArray(st.times) ? st.times : [],
+          format: st.format || '2D'
+        }));
+      }
     }
 
-    // Cập nhật images nếu có file mới
+    // Update images if new files uploaded
     if (req.files && req.files.images && req.files.images.length > 0) {
       req.body.images = req.files.images.map(file => file.path);
     }
 
-    // Cập nhật tất cả các trường
+    // Update all fields
     Object.assign(movie, req.body);
     await movie.save();
+
+    console.log('✅ Movie updated:', movie._id, movie.name);
 
     res.json({
       code: "success",
       message: "Cập nhật phim thành công!",
-      data: movie
+      data: { movie }
     });
   } catch (error) {
     console.error("Error updating movie:", error);
+    
     let message = "Có lỗi xảy ra khi cập nhật phim";
     if (error.errors) {
       Object.keys(error.errors).forEach(key => {
@@ -344,6 +373,7 @@ router.put('/:id', upload.fields([
     } else if (error.message) {
       message = error.message;
     }
+    
     res.status(500).json({
       code: "error",
       message: message
@@ -351,6 +381,101 @@ router.put('/:id', upload.fields([
   }
 });
 
+// ===== [DELETE] /api/catalog/admin/movies/:id - Xóa phim =====
+router.delete('/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    
+    const movie = await Movie.findOne({
+      _id: id,
+      deleted: false
+    });
+    
+    if (!movie) {
+      return res.status(404).json({
+        code: "error",
+        message: "Phim không tìm thấy"
+      });
+    }
+    
+    // Soft delete
+    movie.deleted = true;
+    movie.deletedAt = new Date();
+    movie.deletedBy = req.account?.id || null;
+    await movie.save();
 
+    console.log('✅ Movie deleted:', movie._id, movie.name);
+
+    res.json({
+      code: "success",
+      message: "Xóa phim thành công!"
+    });
+  } catch (error) {
+    console.error('Error deleting movie:', error);
+    res.status(500).json({
+      code: "error",
+      message: "Id không hợp lệ!"
+    });
+  }
+});
+
+// ===== [PATCH] /api/catalog/admin/movies/change-multi - Thay đổi nhiều =====
+router.patch('/change-multi', async (req, res) => {
+  try {
+    const { option, ids } = req.body;
+
+    if (!option || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({
+        code: "error",
+        message: "Thông tin không hợp lệ"
+      });
+    }
+
+    let updateData = {};
+    
+    switch (option) {
+      case "active":
+      case "inactive":
+        updateData = { status: option };
+        await Movie.updateMany(
+          { _id: { $in: ids }, deleted: false },
+          updateData
+        );
+        res.json({
+          code: "success",
+          message: "Đổi trạng thái thành công!"
+        });
+        break;
+        
+      case "delete":
+        updateData = { 
+          deleted: true, 
+          deletedAt: new Date(),
+          deletedBy: req.account?.id || null
+        };
+        await Movie.updateMany(
+          { _id: { $in: ids }, deleted: false },
+          updateData
+        );
+        res.json({
+          code: "success",
+          message: "Xóa thành công!"
+        });
+        break;
+        
+      default:
+        res.status(400).json({
+          code: "error",
+          message: "Option không hợp lệ"
+        });
+    }
+  } catch (error) {
+    console.error('Error in change multi:', error);
+    res.status(500).json({
+      code: "error",
+      message: "Id không tồn tại trong hệ thống!"
+    });
+  }
+});
 
 module.exports = router;
