@@ -147,5 +147,49 @@ router.get('/:id', async (req, res) => {
     res.status(500).json({ code: 'error', message: 'Lỗi server' });
   }
 });
+// GET: Lấy thông tin ghế đã đặt từ Booking Service
+router.get('/booked-seats/:movieId', async (req, res) => {
+  try {
+    const { movieId } = req.params;
+    const { cinema, date, time } = req.query;
 
+    if (!movieId || !cinema || !date || !time) {
+      return res.json({
+        code: "error",
+        message: "Thiếu thông tin cần thiết"
+      });
+    }
+
+    // ✅ GỌI BOOKING SERVICE ĐỂ LẤY GHẾ ĐÃ ĐẶT
+    const axios = require('axios');
+    const BOOKING_SERVICE_URL = process.env.BOOKING_SERVICE_URL || 'http://localhost:3002';
+    
+    const response = await axios.get(
+      `${BOOKING_SERVICE_URL}/api/bookings/seats/booked`,
+      {
+        params: { movieId, cinema, date, time },
+        timeout: 5000
+      }
+    );
+
+    if (response.data.code === 'success') {
+      return res.json({
+        code: "success",
+        bookedSeats: response.data.data.bookedSeats
+      });
+    }
+
+    return res.json({
+      code: "error",
+      message: "Không thể lấy thông tin ghế"
+    });
+
+  } catch (error) {
+    console.error("Error getting booked seats:", error);
+    res.json({
+      code: "success", // ✅ Vẫn trả success, nhưng mảng rỗng
+      bookedSeats: []
+    });
+  }
+});
 module.exports = router;
